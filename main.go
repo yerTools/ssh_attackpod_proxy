@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -34,6 +33,7 @@ type Attack struct {
 }
 
 var db *sql.DB
+var appConfig *Config
 
 func main() {
 	log.SetFlags(0)
@@ -47,61 +47,82 @@ func main() {
 		log.Fatalf("[FATAL] Could not parse NETWATCH_COLLECTOR_PROXIED_URL: %v", err)
 	}
 
-	config := Config{
+	appConfig = &Config{
 		ListenAddress: getEnv("NETWATCH_PROXY_LISTEN_ADDRESS", ":8161"),
 		DatabasePath:  getEnv("NETWATCH_PROXY_DB_PATH", "/app/data/attacks.db"),
 		ProxiedURL:    parsedURL,
 	}
 
-	initDB(config.DatabasePath)
+	initDB(appConfig.DatabasePath)
 	defer db.Close()
 
-	// Create a new reverse proxy.
-	proxy := httputil.NewSingleHostReverseProxy(config.ProxiedURL)
+	// A single handler for all incoming requests.
+	http.HandleFunc("/", handleProxyRequest)
 
-	// We use ModifyResponse to read the body *after* the request has been proxied.
-	// This is more robust as we are intercepting the original request from the sensor.
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		// We only care about successful POST requests to our specific attack path.
-		if resp.Request.Method == http.MethodPost && resp.Request.URL.Path == "/add_attack" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			body, err := io.ReadAll(resp.Request.Body)
-			if err != nil {
-				log.Printf("[ERROR] Failed to read request body for logging: %v", err)
-				return nil // Don't block the proxy
-			}
-			// Restore the body for the actual proxying mechanism
-			resp.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+	log.Printf("Attack Pod Proxy started. Listening on %s. Forwarding to %s.", appConfig.ListenAddress, appConfig.ProxiedURL)
+	if err := http.ListenAndServe(appConfig.ListenAddress, nil); err != nil {
+		log.Fatalf("[FATAL] Failed to start server: %v", err)
+	}
+}
 
-			var attack Attack
-			if err := json.Unmarshal(body, &attack); err != nil {
-				log.Printf("[ERROR] Failed to parse JSON for logging: %v", err)
-				return nil
-			}
+// handleProxyRequest manually forwards the request to ensure minimal header modification.
+func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
+	// Read the entire body of the incoming request.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("[ERROR] Failed to read request body: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	r.Body.Close()
 
-			if err := saveAttackToDB(&attack); err != nil {
-				log.Printf("[ERROR] Failed to save attack to DB: %v", err)
+	// Construct the full destination URL.
+	r.URL.Scheme = appConfig.ProxiedURL.Scheme
+	r.URL.Host = appConfig.ProxiedURL.Host
+	r.Host = appConfig.ProxiedURL.Host
+	targetURL := appConfig.ProxiedURL.ResolveReference(r.URL)
+
+	// Create a new request to be forwarded.
+	proxyReq, err := http.NewRequest(r.Method, targetURL.String(), bytes.NewBuffer(body))
+	if err != nil {
+		log.Printf("[ERROR] Failed to create proxy request: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	proxyReq.Header = r.Header.Clone()
+	proxyReq.Host = appConfig.ProxiedURL.Host
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		log.Printf("[ERROR] Failed to forward request to %s: %v", targetURL, err)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if r.Method == http.MethodPost && r.URL.Path == "/add_attack" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var attack Attack
+		if err := json.Unmarshal(body, &attack); err == nil {
+			if errDb := saveAttackToDB(&attack); errDb != nil {
+				log.Printf("[ERROR] Failed to save attack to DB: %v", errDb)
 			} else {
 				timestamp := time.Now().Format("02.01.2006 15:04:05")
 				log.Printf("%s | %-15s | From: %-15s | To: %-15s | User: %-20s | Pass: %s",
 					timestamp, attack.AttackType, attack.SourceIP, attack.DestinationIP, attack.Username, attack.Password)
 			}
 		}
-		return nil
 	}
 
-	// The Director function modifies the request before it is sent.
-	// This is standard setup for a reverse proxy.
-	proxy.Director = func(req *http.Request) {
-		req.URL.Scheme = config.ProxiedURL.Scheme
-		req.URL.Host = config.ProxiedURL.Host
-		req.Host = config.ProxiedURL.Host
+	// --- Copy the response back to the original client ---
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
 	}
-
-	http.Handle("/", proxy)
-	log.Printf("Attack Pod Proxy started. Listening on %s. Transparently forwarding to %s.", config.ListenAddress, config.ProxiedURL)
-	if err := http.ListenAndServe(config.ListenAddress, nil); err != nil {
-		log.Fatalf("[FATAL] Failed to start server: %v", err)
-	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 func getEnv(key, fallback string) string {
