@@ -253,7 +253,8 @@ func initDB(dbFilepath string) {
 		log.Fatalf("[FATAL] Could not open database: %v", err)
 	}
 
-	createTableSQL := `CREATE TABLE IF NOT EXISTS attacks (
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS attacks (
 		"id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
 		"source_ip" TEXT,
 		"destination_ip" TEXT,
@@ -266,7 +267,7 @@ func initDB(dbFilepath string) {
 	);
 	
 	CREATE INDEX IF NOT EXISTS idx_attacks_source_ip ON attacks (source_ip, attack_timestamp);
-	CREATE INDEX IF NOT EXISTS idx_attacks_destination_ip ON attacks (destination_ip, attack_timestamp
+	CREATE INDEX IF NOT EXISTS idx_attacks_destination_ip ON attacks (destination_ip, attack_timestamp);
 	CREATE INDEX IF NOT EXISTS idx_attacks_source_destination ON attacks (source_ip, destination_ip, attack_timestamp);
 
 	CREATE INDEX IF NOT EXISTS idx_attacks_test_mode ON attacks (test_mode, attack_timestamp);
