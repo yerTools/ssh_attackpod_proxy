@@ -269,7 +269,6 @@ func initDB(dbFilepath string) {
 	CREATE INDEX IF NOT EXISTS idx_attacks_destination_ip ON attacks (destination_ip, attack_timestamp);
 	CREATE INDEX IF NOT EXISTS idx_attacks_source_destination ON attacks (source_ip, destination_ip, attack_timestamp);
 
-	CREATE INDEX IF NOT EXISTS idx_attacks_test_mode ON attacks (test_mode, attack_timestamp);
 	CREATE INDEX IF NOT EXISTS idx_attacks_attack_type ON attacks (attack_type, attack_timestamp);
 	CREATE INDEX IF NOT EXISTS idx_attacks_evidence ON attacks (evidence, attack_timestamp);
 
