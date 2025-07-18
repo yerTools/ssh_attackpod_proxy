@@ -217,8 +217,8 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[ERROR] Failed to save attack to DB: %v\n", errDb)
 		} else {
 			timestamp := attack.AttackTimestamp.ToTime().Format("02.01.2006 15:04:05")
-			log.Printf("%s | %-15s | From: %-15s | To: %-15s | User: %-20s | Pass: %s\n",
-				timestamp, attack.AttackType, attack.SourceIP, attack.DestinationIP, attack.Username, attack.Password)
+			log.Printf("%s | %-15s | From: %-15s | User: %-20s | Pass: %s\n",
+				timestamp, attack.AttackType, attack.SourceIP, attack.Username, attack.Password)
 		}
 	}
 
@@ -317,7 +317,6 @@ func initDB(dbFilepath string) {
 		SELECT
 			strftime('%F %T', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "time",
 			"source_ip" AS "source",
-			"destination_ip" AS "destination",
 			"username",
 			"password"
 		FROM "attacks"
