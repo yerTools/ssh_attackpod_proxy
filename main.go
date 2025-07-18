@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -19,6 +20,8 @@ type Config struct {
 	ListenAddress string
 	DatabasePath  string
 	ProxiedURL    *url.URL
+	LogRequests   bool
+	DebugLog      bool
 }
 
 type Attack struct {
@@ -35,6 +38,13 @@ type Attack struct {
 var db *sql.DB
 var appConfig *Config
 
+func strToBool(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return s == "1" ||
+		s == "true" || s == "t" ||
+		s == "yes" || s == "y"
+}
+
 func main() {
 	log.SetFlags(0)
 
@@ -47,10 +57,15 @@ func main() {
 		log.Fatalf("[FATAL] Could not parse NETWATCH_COLLECTOR_PROXIED_URL: %v", err)
 	}
 
+	logRequests := strToBool(getEnv("NETWATCH_PROXY_LOG_REQUESTS", "false"))
+	debugLog := strToBool(getEnv("NETWATCH_PROXY_DEBUG_LOG", "false"))
+
 	appConfig = &Config{
 		ListenAddress: getEnv("NETWATCH_PROXY_LISTEN_ADDRESS", ":8161"),
 		DatabasePath:  getEnv("NETWATCH_PROXY_DB_PATH", "/app/data/attacks.db"),
 		ProxiedURL:    parsedURL,
+		LogRequests:   logRequests || debugLog,
+		DebugLog:      debugLog,
 	}
 
 	initDB(appConfig.DatabasePath)
@@ -59,7 +74,7 @@ func main() {
 	// A single handler for all incoming requests.
 	http.HandleFunc("/", handleProxyRequest)
 
-	log.Printf("Attack Pod Proxy started. Listening on %s. Forwarding to %s.", appConfig.ListenAddress, appConfig.ProxiedURL)
+	log.Printf("Attack Pod Proxy started. Listening on %s. Forwarding to %s.\n", appConfig.ListenAddress, appConfig.ProxiedURL)
 	if err := http.ListenAndServe(appConfig.ListenAddress, nil); err != nil {
 		log.Fatalf("[FATAL] Failed to start server: %v", err)
 	}
@@ -70,7 +85,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	// Read the entire body of the incoming request.
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("[ERROR] Failed to read request body: %v", err)
+		log.Printf("[ERROR] Failed to read request body: %v\n", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -85,7 +100,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	// Create a new request to be forwarded.
 	proxyReq, err := http.NewRequest(r.Method, targetURL.String(), bytes.NewBuffer(body))
 	if err != nil {
-		log.Printf("[ERROR] Failed to create proxy request: %v", err)
+		log.Printf("[ERROR] Failed to create proxy request: %v\n", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -93,25 +108,85 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	proxyReq.Header = r.Header.Clone()
 	proxyReq.Host = appConfig.ProxiedURL.Host
 
+	if appConfig.LogRequests {
+		log.Printf("[INFO] Forwarding request: %s %s to %s\n", r.Method, r.URL.Path, targetURL.String())
+	}
+	if appConfig.DebugLog {
+		headerCount := 0
+		for _, values := range proxyReq.Header {
+			headerCount += len(values)
+		}
+
+		log.Printf("[DEBUG] Request Headers (%d):\n", headerCount)
+		for key, values := range proxyReq.Header {
+			for _, value := range values {
+				log.Printf("[DEBUG] - %s: %s\n", key, value)
+			}
+		}
+
+		log.Printf("[DEBUG] Request Body (%d bytes):\n", len(body))
+		if len(body) > 0 {
+			log.Printf("[DEBUG] %s\n", string(body))
+		} else {
+			log.Println("[DEBUG] <empty body>")
+		}
+	}
+
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(proxyReq)
 	if err != nil {
-		log.Printf("[ERROR] Failed to forward request to %s: %v", targetURL, err)
+		log.Printf("[ERROR] Failed to forward request to %s: %v\n", targetURL, err)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
+	if appConfig.LogRequests {
+		log.Printf("[INFO] Received response: %d from %s\n", resp.StatusCode, targetURL.String())
+	}
+	if appConfig.DebugLog {
+		headerCount := 0
+		for _, values := range resp.Header {
+			headerCount += len(values)
+		}
+
+		log.Printf("[DEBUG] Response Headers (%d):\n", headerCount)
+		for key, values := range resp.Header {
+			for _, value := range values {
+				log.Printf("[DEBUG] - %s: %s\n", key, value)
+			}
+		}
+
+		// Copy the response body to a buffer for logging.
+		var responseBody bytes.Buffer
+		if _, err := io.Copy(&responseBody, resp.Body); err != nil {
+			log.Printf("[ERROR] Failed to read response body: %v\n", err)
+		} else {
+			responseBytes := responseBody.Bytes()
+
+			log.Printf("[DEBUG] Response Body (%d bytes):\n", len(responseBytes))
+			if len(responseBytes) > 0 {
+				log.Printf("[DEBUG] %s\n", string(responseBytes))
+			} else {
+				log.Println("[DEBUG] <empty body>")
+			}
+
+			// Reset the response body to allow further reading.
+			resp.Body = io.NopCloser(bytes.NewBuffer(responseBytes))
+		}
+	}
+
 	if r.Method == http.MethodPost && r.URL.Path == "/add_attack" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		var attack Attack
-		if err := json.Unmarshal(body, &attack); err == nil {
-			if errDb := saveAttackToDB(&attack); errDb != nil {
-				log.Printf("[ERROR] Failed to save attack to DB: %v", errDb)
-			} else {
-				timestamp := time.Now().Format("02.01.2006 15:04:05")
-				log.Printf("%s | %-15s | From: %-15s | To: %-15s | User: %-20s | Pass: %s",
-					timestamp, attack.AttackType, attack.SourceIP, attack.DestinationIP, attack.Username, attack.Password)
-			}
+		err := json.Unmarshal(body, &attack)
+		if err != nil {
+			log.Printf("[ERROR] Failed to unmarshal attack data: %v\n", err)
+		} else if errDb := saveAttackToDB(&attack); errDb != nil {
+			log.Printf("[ERROR] Failed to save attack to DB: %v\n", errDb)
+		} else {
+			timestamp := time.Now().Format("02.01.2006 15:04:05")
+			log.Printf("%s | %-15s | From: %-15s | To: %-15s | User: %-20s | Pass: %s\n",
+				timestamp, attack.AttackType, attack.SourceIP, attack.DestinationIP, attack.Username, attack.Password)
 		}
 	}
 

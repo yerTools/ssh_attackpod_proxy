@@ -22,6 +22,8 @@ COPY --from=builder /app/ssh_attackpod_proxy /app/ssh_attackpod_proxy
 ENV NETWATCH_COLLECTOR_PROXIED_URL=
 ENV NETWATCH_PROXY_LISTEN_ADDRESS=8161
 ENV NETWATCH_PROXY_DB_PATH=/app/data/attacks.db
+ENV NETWATCH_PROXY_LOG_REQUESTS=false
+ENV NETWATCH_PROXY_DEBUG_LOG=false
 
 VOLUME /app/data
 
