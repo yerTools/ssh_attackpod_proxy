@@ -34,7 +34,7 @@ func (ft *FlexibleTime) UnmarshalJSON(b []byte) error {
 	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {
 		// If that fails, try our custom layout without timezone.
-		t, err = time.Parse(layoutWithoutTimezone, s)
+		t, err = time.ParseInLocation(layoutWithoutTimezone, s, time.Local)
 		if err != nil {
 			return fmt.Errorf("failed to parse time %q with any known layout: %w", s, err)
 		}
