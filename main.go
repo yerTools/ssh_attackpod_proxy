@@ -48,7 +48,7 @@ func main() {
 	}
 
 	config := Config{
-		ListenAddress: getEnv("NETWATCH_PROXY_LISTEN_ADDRESS", ":8080"),
+		ListenAddress: getEnv("NETWATCH_PROXY_LISTEN_ADDRESS", ":8161"),
 		DatabasePath:  getEnv("NETWATCH_PROXY_DB_PATH", "/app/data/attacks.db"),
 		ProxiedURL:    parsedURL,
 	}
@@ -98,7 +98,7 @@ func main() {
 	}
 
 	http.Handle("/", proxy)
-	log.Printf("Go SSH-Proxy started. Listening on %s. Transparently forwarding to %s.", config.ListenAddress, config.ProxiedURL)
+	log.Printf("Attack Pod Proxy started. Listening on %s. Transparently forwarding to %s.", config.ListenAddress, config.ProxiedURL)
 	if err := http.ListenAndServe(config.ListenAddress, nil); err != nil {
 		log.Fatalf("[FATAL] Failed to start server: %v", err)
 	}

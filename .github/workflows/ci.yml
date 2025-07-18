@@ -2,7 +2,9 @@ name: CI & Release
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
   release:
     types: [published]
 
@@ -23,7 +25,7 @@ jobs:
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
-            echo "The folling files are not formatted properly:"
+            echo "The following files are not formatted properly:"
             echo "$unformatted"
             exit 1
           fi
@@ -49,6 +51,7 @@ jobs:
           registry: ghcr.io
 
       - name: Set up Docker Buildx
+        id: buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Cache Docker layers
