@@ -262,8 +262,7 @@ func initDB(dbFilepath string) {
 		"password" TEXT,
 		"attack_timestamp" INTEGER,
 		"evidence" TEXT,
-		"attack_type" TEXT,
-		"test_mode" INTEGER
+		"attack_type" TEXT
 	);
 	
 	CREATE INDEX IF NOT EXISTS idx_attacks_source_ip ON attacks (source_ip, attack_timestamp);
@@ -279,6 +278,104 @@ func initDB(dbFilepath string) {
 	CREATE INDEX IF NOT EXISTS idx_attacks_username ON attacks (username, attack_timestamp);
 	CREATE INDEX IF NOT EXISTS idx_attacks_password ON attacks (password, attack_timestamp);
 	CREATE INDEX IF NOT EXISTS idx_attacks_username_password ON attacks (username, password, attack_timestamp);
+	
+	DROP VIEW IF EXISTS "view_usernames";
+	CREATE VIEW "view_usernames" AS
+		SELECT 
+			"username",
+			COUNT(1) AS "count"
+		FROM "attacks" 
+		GROUP BY "username" 
+		ORDER BY 
+			"count" DESC,
+			"username" ASC;
+
+	DROP VIEW IF EXISTS "view_passwords";
+	CREATE VIEW "view_passwords" AS
+		SELECT 
+			"password",
+			COUNT(1) AS "count"
+		FROM "attacks" 
+		GROUP BY "password" 
+		ORDER BY 
+			"count" DESC,
+			"password" ASC;
+
+	DROP VIEW IF EXISTS "view_source_ips";
+	CREATE VIEW "view_source_ips" AS
+		SELECT 
+			"source_ip",
+			COUNT(1) AS "count"
+		FROM "attacks" 
+		GROUP BY "source_ip" 
+		ORDER BY 
+			"count" DESC,
+			"source_ip" ASC;
+
+	DROP VIEW IF EXISTS "view_log";
+	CREATE VIEW "view_log" AS
+		SELECT
+			strftime('%F %T', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "time",
+			"source_ip" AS "source",
+			"destination_ip" AS "destination",
+			"username",
+			"password"
+		FROM "attacks"
+		ORDER BY "attack_timestamp" DESC;
+
+	DROP VIEW IF EXISTS "view_daily_attacks";
+	CREATE VIEW "view_daily_attacks" AS
+		SELECT
+			strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+			COUNT(*) AS "count"
+		FROM "attacks"
+		GROUP BY "date"
+		ORDER BY "date" DESC;
+
+	DROP VIEW IF EXISTS "view_daily_usernames";
+	CREATE VIEW "view_daily_usernames" AS
+		SELECT
+			strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+			"username",
+			COUNT(*) AS "count"
+		FROM "attacks"
+		GROUP BY 
+			"date",
+			"username"
+		ORDER BY 
+			"date" DESC,
+			"count" DESC,
+			"username" ASC;
+
+	DROP VIEW IF EXISTS "view_daily_passwords";
+	CREATE VIEW "view_daily_passwords" AS
+		SELECT
+			strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+			"password",
+			COUNT(*) AS "count"
+		FROM "attacks"
+		GROUP BY 
+			"date",
+			"password"
+		ORDER BY 
+			"date" DESC,
+			"count" DESC,
+			"password" ASC;
+
+	DROP VIEW IF EXISTS "view_daily_source_ips";
+	CREATE VIEW "view_daily_source_ips" AS
+		SELECT
+			strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+			"source_ip",
+			COUNT(*) AS "count"
+		FROM "attacks"
+		GROUP BY 
+			"date",
+			"source_ip"
+		ORDER BY 
+			"date" DESC,
+			"count" DESC,
+			"source_ip" ASC;
 	`
 
 	_, err = db.Exec(createTableSQL)
@@ -288,8 +385,13 @@ func initDB(dbFilepath string) {
 }
 
 func saveAttackToDB(attack *Attack) error {
-	query := `INSERT INTO attacks (source_ip, destination_ip, username, password, attack_timestamp, evidence, attack_type, test_mode)
-			   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	if attack == nil || attack.TestMode {
+		// Skip saving if attack is nil or in test mode.
+		return nil
+	}
+
+	query := `INSERT INTO attacks (source_ip, destination_ip, username, password, attack_timestamp, evidence, attack_type)
+			   VALUES (?, ?, ?, ?, ?, ?, ?)`
 
 	stmt, err := db.Prepare(query)
 	if err != nil {
@@ -299,7 +401,7 @@ func saveAttackToDB(attack *Attack) error {
 
 	_, err = stmt.Exec(attack.SourceIP, attack.DestinationIP, attack.Username,
 		attack.Password, attack.AttackTimestamp.ToTime().UnixMilli(),
-		attack.Evidence, attack.AttackType, attack.TestMode)
+		attack.Evidence, attack.AttackType)
 	if err != nil {
 		return fmt.Errorf("could not execute statement: %w", err)
 	}
