@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -16,6 +17,37 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+type FlexibleTime time.Time
+
+// UnmarshalJSON implements the json.Unmarshaler interface.
+// It tries to parse the time string with multiple layouts.
+func (ft *FlexibleTime) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), "\"")
+	if s == "null" {
+		return nil
+	}
+
+	// Layout for timestamps without timezone info, like Python's datetime.isoformat()
+	const layoutWithoutTimezone = "2006-01-02T15:04:05.999999"
+
+	// First, try the standard RFC3339 format.
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		// If that fails, try our custom layout without timezone.
+		t, err = time.Parse(layoutWithoutTimezone, s)
+		if err != nil {
+			return fmt.Errorf("failed to parse time %q with any known layout: %w", s, err)
+		}
+	}
+
+	*ft = FlexibleTime(t.Local())
+	return nil
+}
+
+func (ft FlexibleTime) ToTime() time.Time {
+	return time.Time(ft)
+}
+
 type Config struct {
 	ListenAddress string
 	DatabasePath  string
@@ -25,14 +57,14 @@ type Config struct {
 }
 
 type Attack struct {
-	SourceIP        string    `json:"source_ip"`
-	DestinationIP   string    `json:"destination_ip"`
-	Username        string    `json:"username"`
-	Password        string    `json:"password"`
-	AttackTimestamp time.Time `json:"attack_timestamp"`
-	Evidence        string    `json:"evidence"`
-	AttackType      string    `json:"attack_type"`
-	TestMode        bool      `json:"test_mode"`
+	SourceIP        string       `json:"source_ip"`
+	DestinationIP   string       `json:"destination_ip"`
+	Username        string       `json:"username"`
+	Password        string       `json:"password"`
+	AttackTimestamp FlexibleTime `json:"attack_timestamp"`
+	Evidence        string       `json:"evidence"`
+	AttackType      string       `json:"attack_type"`
+	TestMode        bool         `json:"test_mode"`
 }
 
 var db *sql.DB
@@ -184,7 +216,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		} else if errDb := saveAttackToDB(&attack); errDb != nil {
 			log.Printf("[ERROR] Failed to save attack to DB: %v\n", errDb)
 		} else {
-			timestamp := time.Now().Format("02.01.2006 15:04:05")
+			timestamp := attack.AttackTimestamp.ToTime().Format("02.01.2006 15:04:05")
 			log.Printf("%s | %-15s | From: %-15s | To: %-15s | User: %-20s | Pass: %s\n",
 				timestamp, attack.AttackType, attack.SourceIP, attack.DestinationIP, attack.Username, attack.Password)
 		}
@@ -222,10 +254,31 @@ func initDB(dbFilepath string) {
 	}
 
 	createTableSQL := `CREATE TABLE IF NOT EXISTS attacks (
-		"id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "source_ip" TEXT, "destination_ip" TEXT,
-		"username" TEXT, "password" TEXT, "attack_timestamp" DATETIME, "evidence" TEXT,
-		"attack_type" TEXT, "test_mode" BOOLEAN, "proxy_received_at" DATETIME DEFAULT CURRENT_TIMESTAMP
-	);`
+		"id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+		"source_ip" TEXT,
+		"destination_ip" TEXT,
+		"username" TEXT,
+		"password" TEXT,
+		"attack_timestamp" INTEGER,
+		"evidence" TEXT,
+		"attack_type" TEXT,
+		"test_mode" INTEGER
+	);
+	
+	CREATE INDEX IF NOT EXISTS idx_attacks_source_ip ON attacks (source_ip, attack_timestamp);
+	CREATE INDEX IF NOT EXISTS idx_attacks_destination_ip ON attacks (destination_ip, attack_timestamp
+	CREATE INDEX IF NOT EXISTS idx_attacks_source_destination ON attacks (source_ip, destination_ip, attack_timestamp);
+
+	CREATE INDEX IF NOT EXISTS idx_attacks_test_mode ON attacks (test_mode, attack_timestamp);
+	CREATE INDEX IF NOT EXISTS idx_attacks_attack_type ON attacks (attack_type, attack_timestamp);
+	CREATE INDEX IF NOT EXISTS idx_attacks_evidence ON attacks (evidence, attack_timestamp);
+
+	CREATE INDEX IF NOT EXISTS idx_attacks_attack_timestamp ON attacks (attack_timestamp);
+
+	CREATE INDEX IF NOT EXISTS idx_attacks_username ON attacks (username, attack_timestamp);
+	CREATE INDEX IF NOT EXISTS idx_attacks_password ON attacks (password, attack_timestamp);
+	CREATE INDEX IF NOT EXISTS idx_attacks_username_password ON attacks (username, password, attack_timestamp);
+	`
 
 	_, err = db.Exec(createTableSQL)
 	if err != nil {
@@ -239,10 +292,16 @@ func saveAttackToDB(attack *Attack) error {
 
 	stmt, err := db.Prepare(query)
 	if err != nil {
-		return err
+		return fmt.Errorf("could not prepare statement: %w", err)
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(attack.SourceIP, attack.DestinationIP, attack.Username, attack.Password, attack.AttackTimestamp, attack.Evidence, attack.AttackType, attack.TestMode)
+	_, err = stmt.Exec(attack.SourceIP, attack.DestinationIP, attack.Username,
+		attack.Password, attack.AttackTimestamp.ToTime().UnixMilli(),
+		attack.Evidence, attack.AttackType, attack.TestMode)
+	if err != nil {
+		return fmt.Errorf("could not execute statement: %w", err)
+	}
+
 	return err
 }
