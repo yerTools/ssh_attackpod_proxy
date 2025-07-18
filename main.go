@@ -374,6 +374,8 @@ func initDB(dbFilepath string) {
 			"date" DESC,
 			"count" DESC,
 			"source_ip" ASC;
+
+	PRAGMA user_version = 1;
 	`
 
 	_, err = db.Exec(createTableSQL)
