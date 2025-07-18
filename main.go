@@ -216,9 +216,9 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		} else if errDb := saveAttackToDB(&attack); errDb != nil {
 			log.Printf("[ERROR] Failed to save attack to DB: %v\n", errDb)
 		} else {
-			timestamp := attack.AttackTimestamp.ToTime().Format("02.01.2006 15:04:05")
-			log.Printf("%s | %-15s | From: %-15s | User: %-20s | Pass: %s\n",
-				timestamp, attack.AttackType, attack.SourceIP, attack.Username, attack.Password)
+			timestamp := attack.AttackTimestamp.ToTime().Format("02.01. 15:04:05")
+			log.Printf("%s | From: %-15s | User: %-20s | Pass: %s\n",
+				timestamp, attack.SourceIP, attack.Username, attack.Password)
 		}
 	}
 
