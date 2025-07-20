@@ -173,6 +173,205 @@ var migrations = []Migration{
 		);
 		`,
 	},
+	{
+		Version: 3,
+		SQL: `
+		-- View: Aggregiert Angriffe pro Minute und stellt diverse Zeit-Komponenten für flexible Analysen bereit.
+		-- Damit lassen sich leicht Abfragen für Muster nach Wochentag, Tageszeit etc. erstellen.
+		DROP VIEW IF EXISTS "view_attacks_by_time";
+		CREATE VIEW "view_attacks_by_time" AS
+			SELECT
+				strftime('%Y-%m-%d', "attack_timestamp" / 1000, 'unixepoch', 'localtime') AS "date",
+				strftime('%m', "attack_timestamp" / 1000, 'unixepoch', 'localtime') AS "month",
+				strftime('%W', "attack_timestamp" / 1000, 'unixepoch', 'localtime') AS "week_of_year",
+				strftime('%w', "attack_timestamp" / 1000, 'unixepoch', 'localtime') AS "weekday",
+				strftime('%d', "attack_timestamp" / 1000, 'unixepoch', 'localtime') AS "day_of_month",
+				strftime('%H', "attack_timestamp" / 1000, 'unixepoch', 'localtime') AS "hour_of_day",
+				strftime('%M', "attack_timestamp" / 1000, 'unixepoch', 'localtime') AS "minute_of_hour",
+				COUNT(1) AS "count"
+			FROM "attacks"
+			GROUP BY
+				"date",
+				"hour_of_day",
+				"minute_of_hour"
+			ORDER BY
+				"date" ASC,
+				"hour_of_day" ASC,
+				"minute_of_hour" ASC;
+
+		-- View: Top-Kombinationen aus Benutzername und Passwort.
+		-- Zeigt, welche Credentials am häufigsten zusammen verwendet werden.
+		DROP VIEW IF EXISTS "view_logins";
+		CREATE VIEW "view_logins" AS
+			SELECT 
+				"username",
+				"password",
+				COUNT(1) AS "count"
+			FROM "attacks" 
+			GROUP BY 
+				"username", 
+				"password" 
+			ORDER BY 
+				"count" DESC,
+				"username" ASC,
+				"password" ASC;
+
+		-- View: Analysiert Angriffsmuster pro Angreifer-IP.
+		-- Zeigt den ersten und letzten Angriff, die Gesamtzahl und die Anzahl der einzigartigen Benutzernamen.
+		-- Hilft, automatisierte Scans von gezielteren Angriffen zu unterscheiden.
+		DROP VIEW IF EXISTS "view_attack_patterns_by_source";
+		CREATE VIEW "view_attack_patterns_by_source" AS
+			SELECT
+				"source_ip",
+				COUNT(1) AS "total_attacks",
+				COUNT(DISTINCT "username") AS "unique_usernames",
+				COUNT(DISTINCT "password") AS "unique_passwords",
+				COUNT(DISTINCT ("username" || ' <-| username @ password |-> ' || "password")) AS "unique_logins",
+				MIN(strftime('%Y-%m-%d %H:%M:%S', "attack_timestamp" / 1000, 'unixepoch', 'localtime')) AS "first_seen",
+				MAX(strftime('%Y-%m-%d %H:%M:%S', "attack_timestamp" / 1000, 'unixepoch', 'localtime')) AS "last_seen"
+			FROM "attacks"
+			GROUP BY
+				"source_ip"
+			ORDER BY
+				"total_attacks" DESC,
+				"source_ip" ASC;
+
+		-- View: Erstellt "Fingerabdrücke" von Passwortlisten oder Angreifern.
+		-- Analysiert, wie verbreitet eine Username/Passwort-Kombination ist.
+		-- Ein Paar, das von nur einer IP genutzt wird (distinct_source_ips = 1), ist ein starker Indikator für eine spezifische Liste oder einen gezielten Angriff.
+		DROP VIEW IF EXISTS "view_credential_fingerprints";
+		CREATE VIEW "view_credential_fingerprints" AS
+			SELECT
+				"username",
+				"password",
+				COUNT(1) AS "total_uses",
+				COUNT(DISTINCT "source_ip") AS "distinct_source_ips",
+				MIN(strftime('%Y-%m-%d %H:%M:%S', "attack_timestamp" / 1000, 'unixepoch', 'localtime')) AS "first_seen",
+				MAX(strftime('%Y-%m-%d %H:%M:%S', "attack_timestamp" / 1000, 'unixepoch', 'localtime')) AS "last_seen",
+				GROUP_CONCAT(DISTINCT "source_ip") AS "source_ips"
+			FROM "attacks"
+			GROUP BY
+				"username",
+				"password"
+			ORDER BY
+				"distinct_source_ips" ASC,
+				"total_uses" DESC,
+				"last_seen" DESC,
+				"username" ASC,
+				"password" ASC;
+
+		-- Report: Top 20 Angreifer der letzten 24 Stunden.
+		DROP VIEW IF EXISTS "report_top_attackers_last_24_hours";
+		CREATE VIEW "report_top_attackers_last_24_hours" AS
+			SELECT 
+				"source_ip",
+				COUNT(1) AS "count"
+			FROM "attacks" 
+			WHERE "attack_timestamp" >= (strftime('%s', 'now', '-1 day') * 1000)
+			GROUP BY "source_ip" 
+			ORDER BY
+				"count" DESC,
+				"source_ip" ASC
+			LIMIT 20;
+
+		-- Report: Top 20 der in den letzten 7 Tagen am häufigsten getesteten Benutzernamen.
+		DROP VIEW IF EXISTS "report_top_usernames_last_7_days";
+		CREATE VIEW "report_top_usernames_last_7_days" AS
+			SELECT 
+				"username",
+				COUNT(1) AS "count"
+			FROM "attacks" 
+			WHERE "attack_timestamp" >= (strftime('%s', 'now', '-7 days') * 1000)
+			GROUP BY "username" 
+			ORDER BY 
+				"count" DESC,
+				"username" ASC
+			LIMIT 20;
+
+		-- Report: Top 20 der in den letzten 7 Tagen am häufigsten verwendeten Passwörter.
+		DROP VIEW IF EXISTS "report_top_passwords_last_7_days";
+		CREATE VIEW "report_top_passwords_last_7_days" AS
+			SELECT 
+				"password",
+				COUNT(1) AS "count"
+			FROM "attacks" 
+			WHERE "attack_timestamp" >= (strftime('%s', 'now', '-7 days') * 1000)
+			GROUP BY "password" 
+			ORDER BY 
+				"count" DESC,
+				"password" ASC
+			LIMIT 20;
+
+		-- Report: Neue, "einzigartige" Anmeldeinformationen, die in den letzten 7 Tagen zum ersten Mal gesehen wurden.
+		-- Dies filtert die Fingerprint-Ansicht, um nur kürzlich erschienene, seltene Anmeldeinformationen anzuzeigen.
+		DROP VIEW IF EXISTS "report_new_credential_fingerprints_last_7_days";
+		CREATE VIEW "report_new_credential_fingerprints_last_7_days" AS
+			SELECT
+				*
+			FROM "view_credential_fingerprints"
+			WHERE 
+				"distinct_source_ips" = 1 AND
+				"first_seen" >= strftime('%Y-%m-%d %H:%M:%S', 'now', '-7 days', 'localtime');
+
+		-- View: Analysiert die "Streuung" von Angriffen pro Benutzername.
+		-- Vergleicht die Gesamtzahl der Versuche mit der Anzahl der einzigartigen Angreifer.
+		-- Ideal für ein Streudiagramm (Scatter Plot), um die Verbreitung von Usernames in Passwortlisten zu bewerten.
+		DROP VIEW IF EXISTS "view_attack_spread_by_username";
+		CREATE VIEW "view_attack_spread_by_username" AS
+			SELECT
+				"username",
+				COUNT(1) AS "total_attempts",
+				COUNT(DISTINCT "source_ip") AS "distinct_attackers"
+			FROM "attacks"
+			GROUP BY
+				"username"
+			ORDER BY
+				"total_attempts" DESC,
+				"distinct_attackers" DESC,
+				"username" ASC;
+
+		-- Report: Stündliche Angriffe der letzten 7 Tage.
+		DROP VIEW IF EXISTS "report_hourly_attacks_last_7_days";
+		CREATE VIEW "report_hourly_attacks_last_7_days" AS
+			SELECT
+				"time" as "from_time",
+				strftime('%F %T', "time", '+1 hour') AS "to_time",
+				"total_attacks"
+			FROM (
+				SELECT
+					"date" || ' ' || "hour_of_day" || ':00:00' AS "time",
+					SUM("count") AS "total_attacks"
+				FROM "view_attacks_by_time"
+				WHERE 
+					"time" >= strftime('%F %H:00:00', 'now', '-7 days', 'localtime')
+				GROUP BY
+					"date",
+					"hour_of_day"
+				ORDER BY
+					"time" ASC
+			) AS hourly_data;
+
+		-- Report: Tägliche Angriffe der letzten 90 Tage.
+		DROP VIEW IF EXISTS "report_daily_attacks_last_90_days";
+		CREATE VIEW "report_daily_attacks_last_90_days" AS
+			SELECT
+				"time" as "from_time",
+				strftime('%F %T', "time", '+1 day') AS "to_time",
+				"total_attacks"
+			FROM (
+				SELECT
+					"date" || ' 00:00:00' AS "time",
+					SUM("count") AS "total_attacks"
+				FROM "view_attacks_by_time"
+				WHERE
+					"time" >= strftime('%F 00:00:00', 'now', '-90 days', 'localtime')
+				GROUP BY
+					"date"
+				ORDER BY
+					"time" ASC
+			) AS daily_data;
+		`,
+	},
 }
 
 var ErrDuplicateAttack = fmt.Errorf("duplicate attack entry")
