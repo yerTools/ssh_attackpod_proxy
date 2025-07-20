@@ -136,6 +136,20 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
+	if r.Method == http.MethodPost && r.URL.Path == string(EndpointAddAttack) {
+		var attack Attack
+		err := json.Unmarshal(body, &attack)
+		if err != nil {
+			log.Printf("[ERROR] Failed to unmarshal attack data: %v\n", err)
+		} else if errDb := saveAttackToDB(&attack); errDb != nil {
+			log.Printf("[ERROR] Failed to save attack to DB: %v\n", errDb)
+		} else {
+			timestamp := attack.AttackTimestamp.ToTime().Format("02.01. 15:04:05")
+			log.Printf("%s | From: %-15s | User: %-20s | Pass: %s\n",
+				timestamp, attack.SourceIP, attack.Username, attack.Password)
+		}
+	}
+
 	// Construct the full destination URL.
 	r.URL.Scheme = appConfig.ProxiedURL.Scheme
 	r.URL.Host = appConfig.ProxiedURL.Host
@@ -236,20 +250,6 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 
 			// Reset the response body to allow further reading.
 			resp.Body = io.NopCloser(bytes.NewBuffer(responseBytes))
-		}
-	}
-
-	if r.Method == http.MethodPost && r.URL.Path == string(EndpointAddAttack) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		var attack Attack
-		err := json.Unmarshal(body, &attack)
-		if err != nil {
-			log.Printf("[ERROR] Failed to unmarshal attack data: %v\n", err)
-		} else if errDb := saveAttackToDB(&attack); errDb != nil {
-			log.Printf("[ERROR] Failed to save attack to DB: %v\n", errDb)
-		} else {
-			timestamp := attack.AttackTimestamp.ToTime().Format("02.01. 15:04:05")
-			log.Printf("%s | From: %-15s | User: %-20s | Pass: %s\n",
-				timestamp, attack.SourceIP, attack.Username, attack.Password)
 		}
 	}
 
