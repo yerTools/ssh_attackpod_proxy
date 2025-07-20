@@ -17,6 +17,146 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// Migration defines a single database migration.
+type Migration struct {
+	Version int
+	SQL     string
+}
+
+// migrations is a list of database migrations. The version number should be incremental.
+var migrations = []Migration{
+	{
+		Version: 1,
+		SQL: `
+		CREATE TABLE IF NOT EXISTS attacks (
+			"id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+			"source_ip" TEXT,
+			"destination_ip" TEXT,
+			"username" TEXT,
+			"password" TEXT,
+			"attack_timestamp" INTEGER,
+			"evidence" TEXT,
+			"attack_type" TEXT
+		);
+		
+		CREATE INDEX IF NOT EXISTS idx_attacks_source_ip ON attacks (source_ip, attack_timestamp);
+		CREATE INDEX IF NOT EXISTS idx_attacks_destination_ip ON attacks (destination_ip, attack_timestamp);
+		CREATE INDEX IF NOT EXISTS idx_attacks_source_destination ON attacks (source_ip, destination_ip, attack_timestamp);
+	
+		CREATE INDEX IF NOT EXISTS idx_attacks_attack_type ON attacks (attack_type, attack_timestamp);
+		CREATE INDEX IF NOT EXISTS idx_attacks_evidence ON attacks (evidence, attack_timestamp);
+	
+		CREATE INDEX IF NOT EXISTS idx_attacks_attack_timestamp ON attacks (attack_timestamp);
+	
+		CREATE INDEX IF NOT EXISTS idx_attacks_username ON attacks (username, attack_timestamp);
+		CREATE INDEX IF NOT EXISTS idx_attacks_password ON attacks (password, attack_timestamp);
+		CREATE INDEX IF NOT EXISTS idx_attacks_username_password ON attacks (username, password, attack_timestamp);
+		
+		DROP VIEW IF EXISTS "view_usernames";
+		CREATE VIEW "view_usernames" AS
+			SELECT 
+				"username",
+				COUNT(1) AS "count"
+			FROM "attacks" 
+			GROUP BY "username" 
+			ORDER BY 
+				"count" DESC,
+				"username" ASC;
+	
+		DROP VIEW IF EXISTS "view_passwords";
+		CREATE VIEW "view_passwords" AS
+			SELECT 
+				"password",
+				COUNT(1) AS "count"
+			FROM "attacks" 
+			GROUP BY "password" 
+			ORDER BY 
+				"count" DESC,
+				"password" ASC;
+	
+		DROP VIEW IF EXISTS "view_source_ips";
+		CREATE VIEW "view_source_ips" AS
+			SELECT 
+				"source_ip",
+				COUNT(1) AS "count"
+			FROM "attacks" 
+			GROUP BY "source_ip" 
+			ORDER BY 
+				"count" DESC,
+				"source_ip" ASC;
+	
+		DROP VIEW IF EXISTS "view_log";
+		CREATE VIEW "view_log" AS
+			SELECT
+				strftime('%F %T', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "time",
+				"source_ip" AS "source",
+				"username",
+				"password"
+			FROM "attacks"
+			ORDER BY "attack_timestamp" DESC;
+	
+		DROP VIEW IF EXISTS "view_daily_attacks";
+		CREATE VIEW "view_daily_attacks" AS
+			SELECT
+				strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+				COUNT(*) AS "count"
+			FROM "attacks"
+			GROUP BY "date"
+			ORDER BY "date" DESC;
+	
+		DROP VIEW IF EXISTS "view_daily_usernames";
+		CREATE VIEW "view_daily_usernames" AS
+			SELECT
+				strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+				"username",
+				COUNT(*) AS "count"
+			FROM "attacks"
+			GROUP BY 
+				"date",
+				"username"
+			ORDER BY 
+				"date" DESC,
+				"count" DESC,
+				"username" ASC;
+	
+		DROP VIEW IF EXISTS "view_daily_passwords";
+		CREATE VIEW "view_daily_passwords" AS
+			SELECT
+				strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+				"password",
+				COUNT(*) AS "count"
+			FROM "attacks"
+			GROUP BY 
+				"date",
+				"password"
+			ORDER BY 
+				"date" DESC,
+				"count" DESC,
+				"password" ASC;
+	
+		DROP VIEW IF EXISTS "view_daily_source_ips";
+		CREATE VIEW "view_daily_source_ips" AS
+			SELECT
+				strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+				"source_ip",
+				COUNT(*) AS "count"
+			FROM "attacks"
+			GROUP BY 
+				"date",
+				"source_ip"
+			ORDER BY 
+				"date" DESC,
+				"count" DESC,
+				"source_ip" ASC;
+		`,
+	},
+	// Add new migrations here. For example:
+	// {
+	// 	Version: 2,
+	// 	SQL: `ALTER TABLE attacks ADD COLUMN "new_column" TEXT;`,
+	// },
+}
+
 type FlexibleTime time.Time
 
 // UnmarshalJSON implements the json.Unmarshaler interface.
@@ -284,135 +424,49 @@ func initDB(dbFilepath string) {
 		log.Fatalf("[FATAL] Could not open database: %v", err)
 	}
 
-	createTableSQL := `
-	CREATE TABLE IF NOT EXISTS attacks (
-		"id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-		"source_ip" TEXT,
-		"destination_ip" TEXT,
-		"username" TEXT,
-		"password" TEXT,
-		"attack_timestamp" INTEGER,
-		"evidence" TEXT,
-		"attack_type" TEXT
-	);
-	
-	CREATE INDEX IF NOT EXISTS idx_attacks_source_ip ON attacks (source_ip, attack_timestamp);
-	CREATE INDEX IF NOT EXISTS idx_attacks_destination_ip ON attacks (destination_ip, attack_timestamp);
-	CREATE INDEX IF NOT EXISTS idx_attacks_source_destination ON attacks (source_ip, destination_ip, attack_timestamp);
-
-	CREATE INDEX IF NOT EXISTS idx_attacks_attack_type ON attacks (attack_type, attack_timestamp);
-	CREATE INDEX IF NOT EXISTS idx_attacks_evidence ON attacks (evidence, attack_timestamp);
-
-	CREATE INDEX IF NOT EXISTS idx_attacks_attack_timestamp ON attacks (attack_timestamp);
-
-	CREATE INDEX IF NOT EXISTS idx_attacks_username ON attacks (username, attack_timestamp);
-	CREATE INDEX IF NOT EXISTS idx_attacks_password ON attacks (password, attack_timestamp);
-	CREATE INDEX IF NOT EXISTS idx_attacks_username_password ON attacks (username, password, attack_timestamp);
-	
-	DROP VIEW IF EXISTS "view_usernames";
-	CREATE VIEW "view_usernames" AS
-		SELECT 
-			"username",
-			COUNT(1) AS "count"
-		FROM "attacks" 
-		GROUP BY "username" 
-		ORDER BY 
-			"count" DESC,
-			"username" ASC;
-
-	DROP VIEW IF EXISTS "view_passwords";
-	CREATE VIEW "view_passwords" AS
-		SELECT 
-			"password",
-			COUNT(1) AS "count"
-		FROM "attacks" 
-		GROUP BY "password" 
-		ORDER BY 
-			"count" DESC,
-			"password" ASC;
-
-	DROP VIEW IF EXISTS "view_source_ips";
-	CREATE VIEW "view_source_ips" AS
-		SELECT 
-			"source_ip",
-			COUNT(1) AS "count"
-		FROM "attacks" 
-		GROUP BY "source_ip" 
-		ORDER BY 
-			"count" DESC,
-			"source_ip" ASC;
-
-	DROP VIEW IF EXISTS "view_log";
-	CREATE VIEW "view_log" AS
-		SELECT
-			strftime('%F %T', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "time",
-			"source_ip" AS "source",
-			"username",
-			"password"
-		FROM "attacks"
-		ORDER BY "attack_timestamp" DESC;
-
-	DROP VIEW IF EXISTS "view_daily_attacks";
-	CREATE VIEW "view_daily_attacks" AS
-		SELECT
-			strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
-			COUNT(*) AS "count"
-		FROM "attacks"
-		GROUP BY "date"
-		ORDER BY "date" DESC;
-
-	DROP VIEW IF EXISTS "view_daily_usernames";
-	CREATE VIEW "view_daily_usernames" AS
-		SELECT
-			strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
-			"username",
-			COUNT(*) AS "count"
-		FROM "attacks"
-		GROUP BY 
-			"date",
-			"username"
-		ORDER BY 
-			"date" DESC,
-			"count" DESC,
-			"username" ASC;
-
-	DROP VIEW IF EXISTS "view_daily_passwords";
-	CREATE VIEW "view_daily_passwords" AS
-		SELECT
-			strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
-			"password",
-			COUNT(*) AS "count"
-		FROM "attacks"
-		GROUP BY 
-			"date",
-			"password"
-		ORDER BY 
-			"date" DESC,
-			"count" DESC,
-			"password" ASC;
-
-	DROP VIEW IF EXISTS "view_daily_source_ips";
-	CREATE VIEW "view_daily_source_ips" AS
-		SELECT
-			strftime('%F', strftime('%F %T', "attack_timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
-			"source_ip",
-			COUNT(*) AS "count"
-		FROM "attacks"
-		GROUP BY 
-			"date",
-			"source_ip"
-		ORDER BY 
-			"date" DESC,
-			"count" DESC,
-			"source_ip" ASC;
-
-	PRAGMA user_version = 1;
-	`
-
-	_, err = db.Exec(createTableSQL)
-	if err != nil {
-		log.Fatalf("[FATAL] Could not create table: %v", err)
+	if err := runMigrations(db); err != nil {
+		log.Fatalf("[FATAL] Database migration failed: %v", err)
 	}
+}
+
+func runMigrations(db *sql.DB) error {
+	var currentVersion int
+	err := db.QueryRow("PRAGMA user_version;").Scan(&currentVersion)
+	if err != nil {
+		return fmt.Errorf("could not get user_version: %w", err)
+	}
+
+	log.Printf("Current DB version: %d", currentVersion)
+
+	for _, migration := range migrations {
+		if currentVersion < migration.Version {
+			log.Printf("Migrating database to version %d...", migration.Version)
+			tx, err := db.Begin()
+			if err != nil {
+				return fmt.Errorf("could not begin transaction for migration to version %d: %w", migration.Version, err)
+			}
+
+			if _, err := tx.Exec(migration.SQL); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("could not execute migration to version %d: %w", migration.Version, err)
+			}
+
+			// Update user_version
+			setUserVersionSQL := fmt.Sprintf("PRAGMA user_version = %d;", migration.Version)
+			if _, err := tx.Exec(setUserVersionSQL); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("could not set user_version to %d: %w", migration.Version, err)
+			}
+
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("could not commit transaction for migration to version %d: %w", migration.Version, err)
+			}
+			log.Printf("Successfully migrated database to version %d.", migration.Version)
+			currentVersion = migration.Version
+		}
+	}
+
+	return nil
 }
 
 func saveAttackToDB(attack *Attack) error {
