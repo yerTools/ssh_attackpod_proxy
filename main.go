@@ -12,12 +12,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Migration defines a single database migration.
 type Migration struct {
 	Version int
 	SQL     string
@@ -150,12 +150,32 @@ var migrations = []Migration{
 				"source_ip" ASC;
 		`,
 	},
-	// Add new migrations here. For example:
-	// {
-	// 	Version: 2,
-	// 	SQL: `ALTER TABLE attacks ADD COLUMN "new_column" TEXT;`,
-	// },
+	{
+		Version: 2,
+		SQL: `
+		-- Delete duplicate entries, keeping the one with the lowest ID.
+		DELETE FROM attacks
+		WHERE id NOT IN (
+			SELECT MIN(id)
+			FROM attacks
+			GROUP BY source_ip, destination_ip, username, password, attack_timestamp, evidence, attack_type
+		);
+
+		-- Create a unique index to prevent future duplicates.
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_attacks_unique_attack ON attacks (
+			source_ip,
+			destination_ip,
+			username,
+			password,
+			attack_timestamp,
+			evidence,
+			attack_type
+		);
+		`,
+	},
 }
+
+var ErrDuplicateAttack = fmt.Errorf("duplicate attack entry")
 
 type FlexibleTime time.Time
 
@@ -220,6 +240,7 @@ type Attack struct {
 
 var db *sql.DB
 var appConfig *Config
+var dbMutex = &sync.Mutex{}
 
 func strToBool(s string) bool {
 	s = strings.ToLower(strings.TrimSpace(s))
@@ -282,7 +303,13 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("[ERROR] Failed to unmarshal attack data: %v\n", err)
 		} else if errDb := saveAttackToDB(&attack); errDb != nil {
-			log.Printf("[ERROR] Failed to save attack to DB: %v\n", errDb)
+			if errDb == ErrDuplicateAttack {
+				if appConfig.DebugLog {
+					log.Printf("[DEBUG] Skipping duplicate attack entry from %s", attack.SourceIP)
+				}
+			} else {
+				log.Printf("[ERROR] Failed to save attack to DB: %v\n", errDb)
+			}
 		} else {
 			timestamp := attack.AttackTimestamp.ToTime().Format("02.01. 15:04:05")
 			log.Printf("%s | From: %-15s | User: %-22s | Pass: %s\n",
@@ -475,21 +502,56 @@ func saveAttackToDB(attack *Attack) error {
 		return nil
 	}
 
-	query := `INSERT INTO attacks (source_ip, destination_ip, username, password, attack_timestamp, evidence, attack_type)
-			   VALUES (?, ?, ?, ?, ?, ?, ?)`
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
 
-	stmt, err := db.Prepare(query)
+	tx, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("could not prepare statement: %w", err)
+		return fmt.Errorf("could not begin transaction: %w", err)
 	}
-	defer stmt.Close()
 
-	_, err = stmt.Exec(attack.SourceIP, attack.DestinationIP, attack.Username,
+	// Check for duplicates first.
+	checkQuery := `SELECT COUNT(*) FROM attacks WHERE
+					source_ip = ? AND
+					destination_ip = ? AND
+					username = ? AND
+					password = ? AND
+					attack_timestamp = ? AND
+					evidence = ? AND
+					attack_type = ?`
+	var count int
+	err = tx.QueryRow(checkQuery,
+		attack.SourceIP, attack.DestinationIP, attack.Username,
+		attack.Password, attack.AttackTimestamp.ToTime().UnixMilli(),
+		attack.Evidence, attack.AttackType).Scan(&count)
+
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("could not check for duplicate attack: %w", err)
+	}
+
+	if count > 0 {
+		tx.Rollback()
+		return ErrDuplicateAttack
+	}
+
+	// If no duplicate is found, insert the new attack.
+	insertQuery := `INSERT INTO attacks (source_ip, destination_ip, username, password, attack_timestamp, evidence, attack_type)
+			   		 VALUES (?, ?, ?, ?, ?, ?, ?)`
+	_, err = tx.Exec(insertQuery,
+		attack.SourceIP, attack.DestinationIP, attack.Username,
 		attack.Password, attack.AttackTimestamp.ToTime().UnixMilli(),
 		attack.Evidence, attack.AttackType)
+
 	if err != nil {
-		return fmt.Errorf("could not execute statement: %w", err)
+		tx.Rollback()
+		return fmt.Errorf("could not execute insert statement: %w", err)
 	}
 
-	return err
+	err = tx.Commit()
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("could not commit transaction: %w", err)
+	}
+	return nil
 }
