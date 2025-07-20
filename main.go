@@ -164,7 +164,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 6 * time.Second} // The attack pod has a 5s timeout, so we set a 6s timeout for the proxy client.
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		log.Printf("[ERROR] Failed to forward request to %s: %v\n", targetURL, err)
