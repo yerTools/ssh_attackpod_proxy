@@ -143,7 +143,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	targetURL := appConfig.ProxiedURL.ResolveReference(r.URL)
 
 	// Create a new request to be forwarded.
-	proxyReq, err := http.NewRequest(r.Method, targetURL.String(), bytes.NewBuffer(body))
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), bytes.NewBuffer(body))
 	if err != nil {
 		log.Printf("[ERROR] Failed to create proxy request: %v\n", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
