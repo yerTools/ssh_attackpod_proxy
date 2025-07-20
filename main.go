@@ -48,12 +48,23 @@ func (ft FlexibleTime) ToTime() time.Time {
 	return time.Time(ft)
 }
 
+type KnownEndpoints string
+
+// These are the known endpoints that the attack pod python monitor uses.
+//
+// https://github.com/NetWatch-team/SSH-AttackPod/blob/main/src/monitor.py
+const (
+	EndpointCheckIP   KnownEndpoints = "/check_ip"
+	EndpointAddAttack KnownEndpoints = "/add_attack"
+)
+
 type Config struct {
-	ListenAddress string
-	DatabasePath  string
-	ProxiedURL    *url.URL
-	LogRequests   bool
-	DebugLog      bool
+	ListenAddress      string
+	DatabasePath       string
+	ProxiedURL         *url.URL
+	LogRequests        bool
+	DebugLog           bool
+	DoNotSubmitAttacks bool
 }
 
 type Attack struct {
@@ -91,13 +102,15 @@ func main() {
 
 	logRequests := strToBool(getEnv("NETWATCH_PROXY_LOG_REQUESTS", "false"))
 	debugLog := strToBool(getEnv("NETWATCH_PROXY_DEBUG_LOG", "false"))
+	doNotSubmitAttacks := strToBool(getEnv("NETWATCH_PROXY_DO_NOT_SUBMIT_ATTACKS", "false"))
 
 	appConfig = &Config{
-		ListenAddress: getEnv("NETWATCH_PROXY_LISTEN_ADDRESS", ":8161"),
-		DatabasePath:  getEnv("NETWATCH_PROXY_DB_PATH", "/app/data/attacks.db"),
-		ProxiedURL:    parsedURL,
-		LogRequests:   logRequests || debugLog,
-		DebugLog:      debugLog,
+		ListenAddress:      getEnv("NETWATCH_PROXY_LISTEN_ADDRESS", ":8161"),
+		DatabasePath:       getEnv("NETWATCH_PROXY_DB_PATH", "/app/data/attacks.db"),
+		ProxiedURL:         parsedURL,
+		LogRequests:        logRequests || debugLog,
+		DebugLog:           debugLog,
+		DoNotSubmitAttacks: doNotSubmitAttacks,
 	}
 
 	initDB(appConfig.DatabasePath)
@@ -164,14 +177,32 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	client := &http.Client{Timeout: 6 * time.Second} // The attack pod has a 5s timeout, so we set a 6s timeout for the proxy client.
-	resp, err := client.Do(proxyReq)
-	if err != nil {
-		log.Printf("[ERROR] Failed to forward request to %s: %v\n", targetURL, err)
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
-		return
+	var resp *http.Response
+	if appConfig.DoNotSubmitAttacks && r.URL.Path == string(EndpointAddAttack) {
+		if appConfig.LogRequests {
+			log.Printf("[INFO] Skipping submission of attack data due to configuration and returning mockup response.")
+		}
+
+		resp = &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Length": []string{"20"},
+				"Server":         []string{"SSH-AttackPod-Proxy/1.0"},
+				"Date":           []string{time.Now().UTC().Format(http.TimeFormat)},
+				"Content-Type":   []string{"application/json"},
+			},
+			Body: io.NopCloser(bytes.NewBufferString(`{"status":"success"}`)),
+		}
+	} else {
+		client := &http.Client{Timeout: 6 * time.Second} // The attack pod has a 5s timeout, so we set a 6s timeout for the proxy client.
+		resp, err = client.Do(proxyReq)
+		if err != nil {
+			log.Printf("[ERROR] Failed to forward request to %s: %v\n", targetURL, err)
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
 	}
-	defer resp.Body.Close()
 
 	if appConfig.LogRequests {
 		log.Printf("[INFO] Received response: %d from %s\n", resp.StatusCode, targetURL.String())
@@ -208,7 +239,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if r.Method == http.MethodPost && r.URL.Path == "/add_attack" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if r.Method == http.MethodPost && r.URL.Path == string(EndpointAddAttack) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		var attack Attack
 		err := json.Unmarshal(body, &attack)
 		if err != nil {
