@@ -252,7 +252,7 @@ func strToBool(s string) bool {
 func main() {
 	log.SetFlags(0)
 
-	proxiedURLString := getEnv("NETWATCH_COLLECTOR_PROXIED_URL", "")
+	proxiedURLString := getEnv("NETWATCH_COLLECTOR_PROXIED_URL", "https://api.netwatch.team")
 	if proxiedURLString == "" {
 		log.Fatal("[FATAL] Environment variable NETWATCH_COLLECTOR_PROXIED_URL must be set!")
 	}
