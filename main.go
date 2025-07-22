@@ -395,9 +395,9 @@ var migrations = []Migration{
 	{
 		Version: 5,
 		SQL: `
-		-- Trim whitespace from evidence field since they can contain a trailing newline.
+		-- Trim whitespace, tabs, and newlines from the beginning and end of the evidence field.
 		UPDATE attacks
-		SET evidence = TRIM(evidence)
+		SET evidence = TRIM(evidence, ' ' || CHAR(9) || CHAR(10) || CHAR(13))
 		WHERE evidence IS NOT NULL;
 		`,
 	},
