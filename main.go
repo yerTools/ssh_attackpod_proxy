@@ -693,6 +693,8 @@ func runMigrations(db *sql.DB) error {
 
 	log.Printf("Current DB version: %d", currentVersion)
 
+	migrated := false
+
 	for _, migration := range migrations {
 		if currentVersion < migration.Version {
 			log.Printf("Migrating database to version %d...", migration.Version)
@@ -718,6 +720,18 @@ func runMigrations(db *sql.DB) error {
 			}
 			log.Printf("Successfully migrated database to version %d.", migration.Version)
 			currentVersion = migration.Version
+
+			migrated = true
+		}
+	}
+
+	if migrated {
+		log.Printf("Running vacuum to shrink the database file...")
+
+		// Run VACUUM to optimize the database file size.
+		_, err = db.Exec("VACUUM;")
+		if err != nil {
+			log.Printf("[ERROR] Failed to run VACUUM: %v", err)
 		}
 	}
 
