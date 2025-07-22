@@ -372,6 +372,26 @@ var migrations = []Migration{
 			) AS daily_data;
 		`,
 	},
+	{
+		Version: 4,
+		SQL: `
+		-- Report: Top 20 der in den letzten 7 Tagen am häufigsten verwendeten Logins.
+		DROP VIEW IF EXISTS "report_top_logins_last_7_days";
+		CREATE VIEW "report_top_logins_last_7_days" AS
+			SELECT
+				"username",
+				"password",
+				COUNT(1) AS "count"
+			FROM "attacks"
+			WHERE "attack_timestamp" >= (strftime('%s', 'now', '-7 days') * 1000)
+			GROUP BY "username", "password"
+			ORDER BY 
+				"count" DESC,
+				"username" ASC,
+				"password" ASC
+			LIMIT 20;
+		`,
+	},
 }
 
 var ErrDuplicateAttack = fmt.Errorf("duplicate attack entry")
