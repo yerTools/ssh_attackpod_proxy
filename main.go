@@ -392,6 +392,15 @@ var migrations = []Migration{
 			LIMIT 20;
 		`,
 	},
+	{
+		Version: 5,
+		SQL: `
+		-- Trim whitespace from evidence field since they can contain a trailing newline.
+		UPDATE attacks
+		SET evidence = TRIM(evidence)
+		WHERE evidence IS NOT NULL;
+		`,
+	},
 }
 
 var ErrDuplicateAttack = fmt.Errorf("duplicate attack entry")
@@ -760,7 +769,7 @@ func saveAttackToDB(attack *Attack) error {
 	_, err = tx.Exec(insertQuery,
 		attack.SourceIP, attack.DestinationIP, attack.Username,
 		attack.Password, attack.AttackTimestamp.ToTime().UnixMilli(),
-		attack.Evidence, attack.AttackType)
+		strings.TrimSpace(attack.Evidence), attack.AttackType)
 
 	if err != nil {
 		tx.Rollback()
