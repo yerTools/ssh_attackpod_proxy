@@ -401,6 +401,457 @@ var migrations = []Migration{
 		WHERE evidence IS NOT NULL;
 		`,
 	},
+	{
+		Version: 6,
+		SQL: `
+			-- Drop every index.
+			DROP INDEX IF EXISTS "idx_attacks_source_ip";
+			DROP INDEX IF EXISTS "idx_attacks_destination_ip";
+			DROP INDEX IF EXISTS "idx_attacks_source_destination";
+			DROP INDEX IF EXISTS "idx_attacks_attack_type";
+			DROP INDEX IF EXISTS "idx_attacks_evidence";
+			DROP INDEX IF EXISTS "idx_attacks_attack_timestamp";
+			DROP INDEX IF EXISTS "idx_attacks_username";
+			DROP INDEX IF EXISTS "idx_attacks_password";
+			DROP INDEX IF EXISTS "idx_attacks_username_password";
+			DROP INDEX IF EXISTS "idx_attacks_unique_attack";
+
+			-- Drop every view.
+			DROP VIEW IF EXISTS "view_usernames";
+			DROP VIEW IF EXISTS "view_passwords";
+			DROP VIEW IF EXISTS "view_source_ips";
+			DROP VIEW IF EXISTS "view_log";
+			DROP VIEW IF EXISTS "view_daily_attacks";
+			DROP VIEW IF EXISTS "view_daily_usernames";
+			DROP VIEW IF EXISTS "view_daily_passwords";
+			DROP VIEW IF EXISTS "view_daily_source_ips";
+			DROP VIEW IF EXISTS "view_attacks_by_time";
+			DROP VIEW IF EXISTS "view_logins";
+			DROP VIEW IF EXISTS "view_attack_patterns_by_source";
+			DROP VIEW IF EXISTS "view_credential_fingerprints";
+			DROP VIEW IF EXISTS "report_top_attackers_last_24_hours";
+			DROP VIEW IF EXISTS "report_top_usernames_last_7_days";
+			DROP VIEW IF EXISTS "report_top_passwords_last_7_days";
+			DROP VIEW IF EXISTS "report_new_credential_fingerprints_last_7_days";
+			DROP VIEW IF EXISTS "view_attack_spread_by_username";
+			DROP VIEW IF EXISTS "report_hourly_attacks_last_7_days";
+			DROP VIEW IF EXISTS "report_daily_attacks_last_90_days";
+			DROP VIEW IF EXISTS "report_top_logins_last_7_days";
+
+			-- Rename the old attacks table to attacks_old.
+			ALTER TABLE "attacks" RENAME TO "attacks_old";
+
+			-- Create universal sentence tables.
+			CREATE TABLE "_sentence_words" (
+				"id" INTEGER NOT NULL UNIQUE,
+				"word" TEXT NOT NULL UNIQUE,
+				PRIMARY KEY("id" AUTOINCREMENT)
+			);
+			CREATE TABLE "_sentences" (
+				"id" INTEGER NOT NULL,
+				"index" INTEGER NOT NULL,
+				"word_id" INTEGER NOT NULL,
+				FOREIGN KEY("word_id") REFERENCES "_sentence_words"("id"),
+				PRIMARY KEY("id", "index")
+			);
+
+			-- Create dictionary tables.
+			CREATE TABLE "_dict_source_ips" (
+				"id"	INTEGER NOT NULL UNIQUE,
+				"value"	TEXT NOT NULL UNIQUE,
+				PRIMARY KEY("id" AUTOINCREMENT)
+			);
+			CREATE TABLE "_dict_destination_ips" (
+				"id"	INTEGER NOT NULL UNIQUE,
+				"value"	TEXT NOT NULL UNIQUE,
+				PRIMARY KEY("id" AUTOINCREMENT)
+			);
+			CREATE TABLE "_dict_usernames" (
+				"id"	INTEGER NOT NULL UNIQUE,
+				"value"	TEXT NOT NULL UNIQUE,
+				PRIMARY KEY("id" AUTOINCREMENT)
+			);
+			CREATE TABLE "_dict_passwords" (
+				"id"	INTEGER NOT NULL UNIQUE,
+				"value"	TEXT NOT NULL UNIQUE,
+				PRIMARY KEY("id" AUTOINCREMENT)
+			);
+			CREATE TABLE "_dict_attack_types" (
+				"id"	INTEGER NOT NULL UNIQUE,
+				"value"	TEXT NOT NULL UNIQUE,
+				PRIMARY KEY("id" AUTOINCREMENT)
+			);
+			CREATE TABLE "_dict_evidences" (
+				"id"	INTEGER NOT NULL UNIQUE,
+				"value"	TEXT NOT NULL UNIQUE,
+				PRIMARY KEY("id" AUTOINCREMENT)
+			);
+
+			-- Create the new _attacks table with foreign keys to the dictionaries.
+			CREATE TABLE "_attacks" (
+				"id"	INTEGER NOT NULL UNIQUE,
+				"timestamp"	INTEGER NOT NULL,
+				"source_ip"	INTEGER NOT NULL,
+				"destination_ip"	INTEGER NOT NULL,
+				"username"	INTEGER NOT NULL,
+				"password"	INTEGER NOT NULL,
+				"attack_type"	INTEGER NOT NULL,
+				"evidence"	INTEGER NOT NULL,
+				FOREIGN KEY("source_ip") REFERENCES "_dict_source_ips"("id"),
+				FOREIGN KEY("destination_ip") REFERENCES "_dict_destination_ips"("id"),
+				FOREIGN KEY("username") REFERENCES "_dict_usernames"("id"),
+				FOREIGN KEY("password") REFERENCES "_dict_passwords"("id"),
+				FOREIGN KEY("attack_type") REFERENCES "_dict_attack_types"("id"),
+				FOREIGN KEY("evidence") REFERENCES "_dict_evidences"("id"),
+				PRIMARY KEY("id" AUTOINCREMENT)
+			);
+
+			-- Create the new attacks view.
+			CREATE VIEW "attacks" AS
+				SELECT
+					"_attacks"."id",
+					"_attacks"."timestamp",
+					"_dict_source_ips"."value" AS "source_ip",
+					"_dict_destination_ips"."value" AS "destination_ip",
+					"_dict_usernames"."value" AS "username",
+					"_dict_passwords"."value" AS "password",
+					"_dict_attack_types"."value" AS "attack_type",
+					"_dict_evidences"."value" AS "evidence"
+				FROM "_attacks"
+				JOIN "_dict_source_ips" ON "_attacks"."source_ip" = "_dict_source_ips"."id"
+				JOIN "_dict_destination_ips" ON "_attacks"."destination_ip" = "_dict_destination_ips"."id"
+				JOIN "_dict_usernames" ON "_attacks"."username" = "_dict_usernames"."id"
+				JOIN "_dict_passwords" ON "_attacks"."password" = "_dict_passwords"."id"
+				JOIN "_dict_attack_types" ON "_attacks"."attack_type" = "_dict_attack_types"."id"
+				JOIN "_dict_evidences" ON "_attacks"."evidence" = "_dict_evidences"."id";
+
+			-- Create unique index to prevent duplicate attacks.
+			CREATE UNIQUE INDEX "idx_attacks_unique" ON "_attacks" (
+				"timestamp",
+				"source_ip",
+				"destination_ip",
+				"username",
+				"password",
+				"attack_type",
+				"evidence"
+			);
+
+			-- Delete invalid entries from the old attacks table.
+			DELETE FROM "attacks_old"
+			WHERE 
+				"source_ip" IS NULL OR
+				"destination_ip" IS NULL OR
+				"username" IS NULL OR
+				"password" IS NULL OR
+				"attack_type" IS NULL OR
+				"evidence" IS NULL;
+
+			-- Populate the dictionaries with unique values from the old attacks table.
+			INSERT INTO "_dict_source_ips" ("value")
+			SELECT DISTINCT "source_ip" FROM "attacks_old";
+			INSERT INTO "_dict_destination_ips" ("value")
+			SELECT DISTINCT "destination_ip" FROM "attacks_old";
+			INSERT INTO "_dict_usernames" ("value")
+			SELECT DISTINCT "username" FROM "attacks_old";
+			INSERT INTO "_dict_passwords" ("value")
+			SELECT DISTINCT "password" FROM "attacks_old";
+			INSERT INTO "_dict_attack_types" ("value")
+			SELECT DISTINCT "attack_type" FROM "attacks_old";
+			INSERT INTO "_dict_evidences" ("value")
+			SELECT DISTINCT "evidence" FROM "attacks_old";
+
+			-- Populate the new _attacks table with foreign keys from the dictionaries.
+			INSERT INTO "_attacks" (
+				"timestamp",
+				"source_ip",
+				"destination_ip",
+				"username",
+				"password",
+				"attack_type",
+				"evidence"
+			)
+			SELECT
+				"attack_timestamp",
+				(SELECT "id" FROM "_dict_source_ips" WHERE "value" = "source_ip"),
+				(SELECT "id" FROM "_dict_destination_ips" WHERE "value" = "destination_ip"),
+				(SELECT "id" FROM "_dict_usernames" WHERE "value" = "username"),
+				(SELECT "id" FROM "_dict_passwords" WHERE "value" = "password"),
+				(SELECT "id" FROM "_dict_attack_types" WHERE "value" = "attack_type"),
+				(SELECT "id" FROM "_dict_evidences" WHERE "value" = "evidence")
+			FROM "attacks_old";
+
+			-- Drop the old attacks table.
+			DROP TABLE "attacks_old";
+
+			-- Recreate the views with the new attacks view.
+			CREATE VIEW "view_usernames" AS
+				SELECT 
+					"username",
+					COUNT(1) AS "count"
+				FROM "attacks" 
+				GROUP BY "username" 
+				ORDER BY 
+					"count" DESC,
+					"username" ASC;
+		
+			CREATE VIEW "view_passwords" AS
+				SELECT 
+					"password",
+					COUNT(1) AS "count"
+				FROM "attacks" 
+				GROUP BY "password" 
+				ORDER BY 
+					"count" DESC,
+					"password" ASC;
+		
+			CREATE VIEW "view_source_ips" AS
+				SELECT 
+					"source_ip",
+					COUNT(1) AS "count"
+				FROM "attacks" 
+				GROUP BY "source_ip" 
+				ORDER BY 
+					"count" DESC,
+					"source_ip" ASC;
+		
+			CREATE VIEW "view_log" AS
+				SELECT
+					strftime('%F %T', strftime('%F %T', "timestamp" / 1000, 'unixepoch'), 'localtime') AS "time",
+					"source_ip" AS "source",
+					"username",
+					"password"
+				FROM "attacks"
+				ORDER BY "timestamp" DESC;
+		
+			CREATE VIEW "view_daily_attacks" AS
+				SELECT
+					strftime('%F', strftime('%F %T', "timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+					COUNT(*) AS "count"
+				FROM "attacks"
+				GROUP BY "date"
+				ORDER BY "date" DESC;
+		
+			CREATE VIEW "view_daily_usernames" AS
+				SELECT
+					strftime('%F', strftime('%F %T', "timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+					"username",
+					COUNT(*) AS "count"
+				FROM "attacks"
+				GROUP BY 
+					"date",
+					"username"
+				ORDER BY 
+					"date" DESC,
+					"count" DESC,
+					"username" ASC;
+		
+			CREATE VIEW "view_daily_passwords" AS
+				SELECT
+					strftime('%F', strftime('%F %T', "timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+					"password",
+					COUNT(*) AS "count"
+				FROM "attacks"
+				GROUP BY 
+					"date",
+					"password"
+				ORDER BY 
+					"date" DESC,
+					"count" DESC,
+					"password" ASC;
+		
+			CREATE VIEW "view_daily_source_ips" AS
+				SELECT
+					strftime('%F', strftime('%F %T', "timestamp" / 1000, 'unixepoch'), 'localtime') AS "date",
+					"source_ip",
+					COUNT(*) AS "count"
+				FROM "attacks"
+				GROUP BY 
+					"date",
+					"source_ip"
+				ORDER BY 
+					"date" DESC,
+					"count" DESC,
+					"source_ip" ASC;
+
+			CREATE VIEW "view_attacks_by_time" AS
+				SELECT
+					strftime('%Y-%m-%d', "timestamp" / 1000, 'unixepoch', 'localtime') AS "date",
+					strftime('%m', "timestamp" / 1000, 'unixepoch', 'localtime') AS "month",
+					strftime('%W', "timestamp" / 1000, 'unixepoch', 'localtime') AS "week_of_year",
+					strftime('%w', "timestamp" / 1000, 'unixepoch', 'localtime') AS "weekday",
+					strftime('%d', "timestamp" / 1000, 'unixepoch', 'localtime') AS "day_of_month",
+					strftime('%H', "timestamp" / 1000, 'unixepoch', 'localtime') AS "hour_of_day",
+					strftime('%M', "timestamp" / 1000, 'unixepoch', 'localtime') AS "minute_of_hour",
+					COUNT(1) AS "count"
+				FROM "attacks"
+				GROUP BY
+					"date",
+					"hour_of_day",
+					"minute_of_hour"
+				ORDER BY
+					"date" ASC,
+					"hour_of_day" ASC,
+					"minute_of_hour" ASC;
+
+			CREATE VIEW "view_logins" AS
+				SELECT 
+					"username",
+					"password",
+					COUNT(1) AS "count"
+				FROM "attacks" 
+				GROUP BY 
+					"username", 
+					"password" 
+				ORDER BY 
+					"count" DESC,
+					"username" ASC,
+					"password" ASC;
+
+			CREATE VIEW "view_attack_patterns_by_source" AS
+				SELECT
+					"source_ip",
+					COUNT(1) AS "total_attacks",
+					COUNT(DISTINCT "username") AS "unique_usernames",
+					COUNT(DISTINCT "password") AS "unique_passwords",
+					COUNT(DISTINCT ("username" || ' <-| username @ password |-> ' || "password")) AS "unique_logins",
+					MIN(strftime('%Y-%m-%d %H:%M:%S', "timestamp" / 1000, 'unixepoch', 'localtime')) AS "first_seen",
+					MAX(strftime('%Y-%m-%d %H:%M:%S', "timestamp" / 1000, 'unixepoch', 'localtime')) AS "last_seen"
+				FROM "attacks"
+				GROUP BY
+					"source_ip"
+				ORDER BY
+					"total_attacks" DESC,
+					"source_ip" ASC;
+
+			CREATE VIEW "view_credential_fingerprints" AS
+				SELECT
+					"username",
+					"password",
+					COUNT(1) AS "total_uses",
+					COUNT(DISTINCT "source_ip") AS "distinct_source_ips",
+					MIN(strftime('%Y-%m-%d %H:%M:%S', "timestamp" / 1000, 'unixepoch', 'localtime')) AS "first_seen",
+					MAX(strftime('%Y-%m-%d %H:%M:%S', "timestamp" / 1000, 'unixepoch', 'localtime')) AS "last_seen",
+					GROUP_CONCAT(DISTINCT "source_ip") AS "source_ips"
+				FROM "attacks"
+				GROUP BY
+					"username",
+					"password"
+				ORDER BY
+					"distinct_source_ips" ASC,
+					"total_uses" DESC,
+					"last_seen" DESC,
+					"username" ASC,
+					"password" ASC;
+
+			CREATE VIEW "report_top_attackers_last_24_hours" AS
+				SELECT 
+					"source_ip",
+					COUNT(1) AS "count"
+				FROM "attacks" 
+				WHERE "timestamp" >= (strftime('%s', 'now', '-1 day') * 1000)
+				GROUP BY "source_ip" 
+				ORDER BY
+					"count" DESC,
+					"source_ip" ASC
+				LIMIT 20;
+
+			CREATE VIEW "report_top_usernames_last_7_days" AS
+				SELECT 
+					"username",
+					COUNT(1) AS "count"
+				FROM "attacks" 
+				WHERE "timestamp" >= (strftime('%s', 'now', '-7 days') * 1000)
+				GROUP BY "username" 
+				ORDER BY 
+					"count" DESC,
+					"username" ASC
+				LIMIT 20;
+
+			CREATE VIEW "report_top_passwords_last_7_days" AS
+				SELECT 
+					"password",
+					COUNT(1) AS "count"
+				FROM "attacks" 
+				WHERE "timestamp" >= (strftime('%s', 'now', '-7 days') * 1000)
+				GROUP BY "password" 
+				ORDER BY 
+					"count" DESC,
+					"password" ASC
+				LIMIT 20;
+
+			CREATE VIEW "report_new_credential_fingerprints_last_7_days" AS
+				SELECT
+					*
+				FROM "view_credential_fingerprints"
+				WHERE 
+					"distinct_source_ips" = 1 AND
+					"first_seen" >= strftime('%Y-%m-%d %H:%M:%S', 'now', '-7 days', 'localtime');
+
+			CREATE VIEW "view_attack_spread_by_username" AS
+				SELECT
+					"username",
+					COUNT(1) AS "total_attempts",
+					COUNT(DISTINCT "source_ip") AS "distinct_attackers"
+				FROM "attacks"
+				GROUP BY
+					"username"
+				ORDER BY
+					"total_attempts" DESC,
+					"distinct_attackers" DESC,
+					"username" ASC;
+
+			CREATE VIEW "report_hourly_attacks_last_7_days" AS
+				SELECT
+					"time" as "from_time",
+					strftime('%F %T', "time", '+1 hour') AS "to_time",
+					"total_attacks"
+				FROM (
+					SELECT
+						"date" || ' ' || "hour_of_day" || ':00:00' AS "time",
+						SUM("count") AS "total_attacks"
+					FROM "view_attacks_by_time"
+					WHERE 
+						"time" >= strftime('%F %H:00:00', 'now', '-7 days', 'localtime')
+					GROUP BY
+						"date",
+						"hour_of_day"
+					ORDER BY
+						"time" ASC
+				) AS hourly_data;
+
+			CREATE VIEW "report_daily_attacks_last_90_days" AS
+				SELECT
+					"time" as "from_time",
+					strftime('%F %T', "time", '+1 day') AS "to_time",
+					"total_attacks"
+				FROM (
+					SELECT
+						"date" || ' 00:00:00' AS "time",
+						SUM("count") AS "total_attacks"
+					FROM "view_attacks_by_time"
+					WHERE
+						"time" >= strftime('%F 00:00:00', 'now', '-90 days', 'localtime')
+					GROUP BY
+						"date"
+					ORDER BY
+						"time" ASC
+				) AS daily_data;
+
+			CREATE VIEW "report_top_logins_last_7_days" AS
+				SELECT
+					"username",
+					"password",
+					COUNT(1) AS "count"
+				FROM "attacks"
+				WHERE "timestamp" >= (strftime('%s', 'now', '-7 days') * 1000)
+				GROUP BY "username", "password"
+				ORDER BY 
+					"count" DESC,
+					"username" ASC,
+					"password" ASC
+				LIMIT 20;
+		`,
+	},
 }
 
 var ErrDuplicateAttack = fmt.Errorf("duplicate attack entry")
@@ -753,19 +1204,21 @@ func saveAttackToDB(attack *Attack) error {
 	}
 
 	// Check for duplicates first.
-	checkQuery := `SELECT COUNT(*) FROM attacks WHERE
-					source_ip = ? AND
-					destination_ip = ? AND
-					username = ? AND
-					password = ? AND
-					attack_timestamp = ? AND
-					evidence = ? AND
-					attack_type = ?`
+	checkQuery := `SELECT COUNT(*) FROM _attacks WHERE
+					timestamp = ? ANS
+					source_ip = (SELECT id FROM _dict_source_ips WHERE value = ?) AND
+					destination_ip = (SELECT id FROM _dict_destination_ips WHERE value = ?) AND
+					username = (SELECT id FROM _dict_usernames WHERE value = ?) AND
+					password = (SELECT id FROM _dict_passwords WHERE value = ?) AND
+					attack_type = (SELECT id FROM _dict_attack_types WHERE value = ?) AND
+					evidence = (SELECT id FROM _dict_evidences WHERE value = ?)
+					`
 	var count int
 	err = tx.QueryRow(checkQuery,
-		attack.SourceIP, attack.DestinationIP, attack.Username,
-		attack.Password, attack.AttackTimestamp.ToTime().UnixMilli(),
-		attack.Evidence, attack.AttackType).Scan(&count)
+		attack.AttackTimestamp.ToTime().UnixMilli(),
+		attack.SourceIP, attack.DestinationIP,
+		attack.Username, attack.Password,
+		attack.AttackType, attack.Evidence).Scan(&count)
 
 	if err != nil {
 		tx.Rollback()
@@ -778,12 +1231,21 @@ func saveAttackToDB(attack *Attack) error {
 	}
 
 	// If no duplicate is found, insert the new attack.
-	insertQuery := `INSERT INTO attacks (source_ip, destination_ip, username, password, attack_timestamp, evidence, attack_type)
-			   		 VALUES (?, ?, ?, ?, ?, ?, ?)`
+	/*insertQuery := `INSERT INTO attacks (source_ip, destination_ip, username, password, attack_timestamp, evidence, attack_type)
+	VALUES (?, ?, ?, ?, ?, ?, ?)`*/
+	insertQuery := `INSERT INTO _attacks (timestamp, source_ip, destination_ip, username, password, attack_type, evidence)
+	VALUES (?,
+		(SELECT id FROM _dict_source_ips WHERE value = ?),
+		(SELECT id FROM _dict_destination_ips WHERE value = ?),
+		(SELECT id FROM _dict_usernames WHERE value = ?),
+		(SELECT id FROM _dict_passwords WHERE value = ?),
+		(SELECT id FROM _dict_attack_types WHERE value = ?),
+		(SELECT id FROM _dict_evidences WHERE value = ?))`
 	_, err = tx.Exec(insertQuery,
-		attack.SourceIP, attack.DestinationIP, attack.Username,
-		attack.Password, attack.AttackTimestamp.ToTime().UnixMilli(),
-		strings.TrimSpace(attack.Evidence), attack.AttackType)
+		attack.AttackTimestamp.ToTime().UnixMilli(),
+		attack.SourceIP, attack.DestinationIP,
+		attack.Username, attack.Password,
+		attack.AttackType, strings.TrimSpace(attack.Evidence))
 
 	if err != nil {
 		tx.Rollback()
