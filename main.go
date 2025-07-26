@@ -1205,7 +1205,7 @@ func saveAttackToDB(attack *Attack) error {
 
 	// Check for duplicates first.
 	checkQuery := `SELECT COUNT(*) FROM _attacks WHERE
-					timestamp = ? ANS
+					timestamp = ? AND
 					source_ip = (SELECT id FROM _dict_source_ips WHERE value = ?) AND
 					destination_ip = (SELECT id FROM _dict_destination_ips WHERE value = ?) AND
 					username = (SELECT id FROM _dict_usernames WHERE value = ?) AND
