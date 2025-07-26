@@ -852,6 +852,14 @@ var migrations = []Migration{
 				LIMIT 20;
 		`,
 	},
+	{
+		Version: 7,
+		SQL: `
+			-- Remove unused tables.
+			DROP TABLE IF EXISTS "_sentence_words";
+			DROP TABLE IF EXISTS "_sentences";
+		`,
+	},
 }
 
 var ErrDuplicateAttack = fmt.Errorf("duplicate attack entry")
