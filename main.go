@@ -1203,6 +1203,9 @@ func saveAttackToDB(attack *Attack) error {
 		return nil
 	}
 
+	timestamp := attack.AttackTimestamp.ToTime().UnixMilli()
+	evidence := strings.TrimSpace(attack.Evidence)
+
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
@@ -1223,10 +1226,10 @@ func saveAttackToDB(attack *Attack) error {
 					`
 	var count int
 	err = tx.QueryRow(checkQuery,
-		attack.AttackTimestamp.ToTime().UnixMilli(),
+		timestamp,
 		attack.SourceIP, attack.DestinationIP,
 		attack.Username, attack.Password,
-		attack.AttackType, attack.Evidence).Scan(&count)
+		attack.AttackType, evidence).Scan(&count)
 
 	if err != nil {
 		tx.Rollback()
@@ -1239,8 +1242,21 @@ func saveAttackToDB(attack *Attack) error {
 	}
 
 	// If no duplicate is found, insert the new attack.
-	/*insertQuery := `INSERT INTO attacks (source_ip, destination_ip, username, password, attack_timestamp, evidence, attack_type)
-	VALUES (?, ?, ?, ?, ?, ?, ?)`*/
+	insertValuesQuery := `INSERT OR IGNORE INTO _dict_source_ips (value) VALUES (?);
+	INSERT OR IGNORE INTO _dict_destination_ips (value) VALUES (?);
+	INSERT OR IGNORE INTO _dict_usernames (value) VALUES (?);
+	INSERT OR IGNORE INTO _dict_passwords (value) VALUES (?);
+	INSERT OR IGNORE INTO _dict_attack_types (value) VALUES (?);
+	INSERT OR IGNORE INTO _dict_evidences (value) VALUES (?);`
+	_, err = tx.Exec(insertValuesQuery,
+		attack.SourceIP, attack.DestinationIP,
+		attack.Username, attack.Password,
+		attack.AttackType, evidence)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("could not execute insert values statement: %w", err)
+	}
+
 	insertQuery := `INSERT INTO _attacks (timestamp, source_ip, destination_ip, username, password, attack_type, evidence)
 	VALUES (?,
 		(SELECT id FROM _dict_source_ips WHERE value = ?),
@@ -1250,10 +1266,10 @@ func saveAttackToDB(attack *Attack) error {
 		(SELECT id FROM _dict_attack_types WHERE value = ?),
 		(SELECT id FROM _dict_evidences WHERE value = ?))`
 	_, err = tx.Exec(insertQuery,
-		attack.AttackTimestamp.ToTime().UnixMilli(),
+		timestamp,
 		attack.SourceIP, attack.DestinationIP,
 		attack.Username, attack.Password,
-		attack.AttackType, strings.TrimSpace(attack.Evidence))
+		attack.AttackType, evidence)
 
 	if err != nil {
 		tx.Rollback()
