@@ -856,8 +856,8 @@ var migrations = []Migration{
 		Version: 7,
 		SQL: `
 			-- Remove unused tables.
-			DROP TABLE IF EXISTS "_sentence_words";
-			DROP TABLE IF EXISTS "_sentences";
+			DROP TABLE "_sentence_words";
+			DROP TABLE "_sentences";
 		`,
 	},
 }
